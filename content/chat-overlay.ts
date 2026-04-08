@@ -172,7 +172,7 @@ const STYLES = `
   .message-thinking {
     align-self: flex-start; background: rgba(103, 232, 249, 0.1);
     border: 1px solid rgba(103, 232, 249, 0.15); font-size: 12px; color: #67e8f9; font-style: italic;
-    cursor: pointer; user-select: none;
+    cursor: pointer;
     opacity: 0.4; transition: opacity 0.2s ease;
   }
   .message-thinking:hover { opacity: 1; }
