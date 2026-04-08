@@ -10,8 +10,15 @@ function getCountry(): string {
   const locale = navigator.language || 'en-US'
   const region = locale.split('-')[1]
   if (!region) return 'unknown'
-  const displayNames = new Intl.DisplayNames([locale], { type: 'region' })
-  return displayNames.of(region) ?? 'unknown'
+  try {
+    const displayNames = new Intl.DisplayNames([locale], { type: 'region' })
+    const country = displayNames.of(region)
+    return country ?? 'unknown'
+  } catch {
+    // Intl.DisplayNames may not be supported in all environments
+    // or the region code may be invalid
+    return 'unknown'
+  }
 }
 
 function buildSystemPrompt(pageContext?: string): string {
@@ -87,8 +94,10 @@ const modelHost = new GemmaModelHost((status, progress, error) => {
 })
 
 // Pending tool results keyed by requestId
-const pendingToolResults = new Map<string, (result: unknown) => void>()
+const pendingToolResults = new Map<string, { resolve: (result: unknown) => void, timeoutId: number }>()
 let requestIdCounter = 0
+
+const TOOL_EXECUTION_TIMEOUT = 30000 // 30 seconds
 
 function createToolExecutor(tabId: number) {
   return {
@@ -96,8 +105,14 @@ function createToolExecutor(tabId: number) {
       const requestId = `tool_${++requestIdCounter}`
       log.info('Executing tool:', call.name, JSON.stringify(call.arguments))
 
-      const resultPromise = new Promise<unknown>((resolve) => {
-        pendingToolResults.set(requestId, resolve)
+      const resultPromise = new Promise<unknown>((resolve, reject) => {
+        // Set up timeout to prevent hanging forever
+        const timeoutId = window.setTimeout(() => {
+          pendingToolResults.delete(requestId)
+          reject(new Error(`Tool ${call.name} execution timed out after ${TOOL_EXECUTION_TIMEOUT}ms`))
+        }, TOOL_EXECUTION_TIMEOUT)
+
+        pendingToolResults.set(requestId, { resolve, timeoutId })
       })
 
       chrome.runtime.sendMessage({
@@ -107,9 +122,14 @@ function createToolExecutor(tabId: number) {
         call,
       } satisfies Message)
 
-      const result = await resultPromise
-      log.debug('Tool result:', call.name, JSON.stringify(result).slice(0, 200))
-      return { name: call.name, result }
+      try {
+        const result = await resultPromise
+        log.debug('Tool result:', call.name, JSON.stringify(result).slice(0, 200))
+        return { name: call.name, result }
+      } catch (e) {
+        log.error('Tool execution failed:', call.name, e)
+        return { name: call.name, result: { error: e instanceof Error ? e.message : String(e) } }
+      }
     },
   }
 }
@@ -252,9 +272,10 @@ chrome.runtime.onMessage.addListener((message: Message) => {
 
     case 'tool:result': {
       log.debug('Tool result received:', message.requestId)
-      const resolve = pendingToolResults.get(message.requestId)
-      if (resolve) {
-        resolve(message.result)
+      const entry = pendingToolResults.get(message.requestId)
+      if (entry) {
+        clearTimeout(entry.timeoutId)
+        entry.resolve(message.result)
         pendingToolResults.delete(message.requestId)
       }
       break

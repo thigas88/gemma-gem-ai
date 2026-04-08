@@ -22,6 +22,13 @@ export async function ensureOffscreenDocument(): Promise<void> {
     justification: 'Run Gemma 4 model inference via WebGPU',
   })
 
-  await creating
-  creating = null
+  try {
+    await creating
+  } catch (e) {
+    // If creation fails, make sure we reset the creating flag
+    // so subsequent calls can retry
+    throw e
+  } finally {
+    creating = null
+  }
 }
